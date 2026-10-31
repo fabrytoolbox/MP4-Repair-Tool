@@ -1,13 +1,14 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    MP4-Repair-Tool (Untrunc Edition) - Recupero video X/Twitter.
+    MP4-Repair-Tool - Riparatore di file MP4 con supporto Untrunc per video X/Twitter.
 .DESCRIPTION
-    Strumento progettato per recuperare i video danneggiati di X (Twitter) usando 
-    esclusivamente Untrunc con un file di riferimento sano.
-    Se Untrunc fallisce, il file viene segnato come errore (nessun fallback FFmpeg).
+    Verifica la presenza di FFmpeg e Untrunc. Se manca Untrunc, lo scarica 
+    automaticamente dal repository ufficiale. Offre due modalità: riparazione 
+    standard con FFmpeg e recupero video X/Twitter con Untrunc (richiede un file 
+    di riferimento sano e verifica la dimensione finale).
 .NOTES
-    Prerequisiti: PowerShell 7+, FFmpeg (solo per modalità standard), Untrunc.
+    Prerequisiti: PowerShell 7+, FFmpeg (per modalità standard), Untrunc.
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -23,55 +24,77 @@ $BtnColor = [System.Drawing.Color]::FromArgb(0, 50, 0)
 # FUNZIONE: Controllo e Download Prerequisiti
 # ============================================================
 function Ensure-Tools {
+    # Controllo FFmpeg
     $ffmpegPath = (Get-Command "ffmpeg.exe" -ErrorAction SilentlyContinue).Source
     if (-not $ffmpegPath) { $ffmpegPath = Join-Path (Get-Location) "ffmpeg.exe" }
     if (-not (Test-Path $ffmpegPath)) {
-        [System.Windows.Forms.MessageBox]::Show("FFmpeg non trovato! Scaricalo da https://www.gyan.dev/ffmpeg/builds/", "FFmpeg Mancante", "OK", "Warning")
+        [System.Windows.Forms.MessageBox]::Show(
+            "FFmpeg non trovato!`n`nScarica la build per Windows da:`nhttps://www.gyan.dev/ffmpeg/builds/`n`nEstrai ffmpeg.exe e mettilo in questa cartella.", 
+            "FFmpeg Mancante", "OK", "Warning"
+        )
         return $false
     }
 
+    # Controllo e Download Untrunc
     $untruncPath = (Get-Command "untrunc.exe" -ErrorAction SilentlyContinue).Source
+    
     if (-not $untruncPath) { 
-        $existing = Get-ChildItem -Path (Get-Location) -Filter "*untrunc*.exe" | Select-Object -First 1
+        $existing = Get-ChildItem -Path (Get-Location) -Filter "*untrunc*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($existing) { $untruncPath = $existing.FullName }
     }
     
-    if (-not (Test-Path $untruncPath)) {
-        $choice = [System.Windows.Forms.MessageBox]::Show("Untrunc non trovato! Vuoi scaricarlo automaticamente?", "Untrunc Mancante", "YesNo", "Question")
-        if ($choice -eq "Yes") {
-            try {
-                Write-Host "Download di Untrunc in corso..." -ForegroundColor Yellow
-                $zipPath = Join-Path $env:TEMP "untrunc_x64.zip"
-                $downloadUrl = "https://github.com/anthwlock/untrunc/releases/download/latest/untrunc_x64.zip"
-                Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
-                
-                $tempExtract = Join-Path $env:TEMP "untrunc_extract"
-                if (Test-Path $tempExtract) { Remove-Item -Path $tempExtract -Recurse -Force }
-                Expand-Archive -Path $zipPath -DestinationPath $tempExtract -Force
-                Remove-Item -Path $zipPath -Force
-                
-                $foundExe = Get-ChildItem -Path $tempExtract -Filter "*untrunc*.exe" -Recurse | Select-Object -First 1
-                if ($foundExe) {
-                    $sourceFolder = $foundExe.Directory.FullName
-                    Get-ChildItem -Path $sourceFolder -File | Move-Item -Destination (Get-Location) -Force
-                    Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
-                    
-                    $finalExe = Join-Path (Get-Location) $foundExe.Name
-                    if ($foundExe.Name -ne "untrunc.exe") {
-                        Rename-Item -Path $finalExe -NewName "untrunc.exe" -Force
-                    }
-                    Write-Host "Untrunc installato con successo!" -ForegroundColor Green
-                    return $true
-                } else { throw "Estrazione fallita: nessun .exe trovato." }
-            } catch {
-                [System.Windows.Forms.MessageBox]::Show("Errore download Untrunc: $_", "Errore", "OK", "Error")
-                return $false
-            }
-        } else { return $false }
+    # Controllo di sicurezza: se il percorso esiste ed è valido, siamo a posto
+    if ($untruncPath -and (Test-Path $untruncPath)) {
+        return $true
     }
-    return $true
+
+    # Se arriviamo qui, Untrunc non c'è. Chiediamo se scaricarlo.
+    $choice = [System.Windows.Forms.MessageBox]::Show(
+        "Untrunc non trovato!`n`nVuoi scaricarlo automaticamente da GitHub? (Circa 11 MB)", 
+        "Untrunc Mancante", "YesNo", "Question"
+    )
+    
+    if ($choice -eq "Yes") {
+        try {
+            Write-Host "Download di Untrunc in corso..." -ForegroundColor Yellow
+            $zipPath = Join-Path $env:TEMP "untrunc_x64.zip"
+            $downloadUrl = "https://github.com/anthwlock/untrunc/releases/download/latest/untrunc_x64.zip"
+            
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
+            
+            $tempExtract = Join-Path $env:TEMP "untrunc_extract"
+            if (Test-Path $tempExtract) { Remove-Item -Path $tempExtract -Recurse -Force }
+            Expand-Archive -Path $zipPath -DestinationPath $tempExtract -Force
+            Remove-Item -Path $zipPath -Force
+            
+            $foundExe = Get-ChildItem -Path $tempExtract -Filter "*untrunc*.exe" -Recurse | Select-Object -First 1
+            
+            if ($foundExe) {
+                $sourceFolder = $foundExe.Directory.FullName
+                Get-ChildItem -Path $sourceFolder -File | Move-Item -Destination (Get-Location) -Force
+                Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+                
+                $finalExe = Join-Path (Get-Location) $foundExe.Name
+                if ($foundExe.Name -ne "untrunc.exe") {
+                    Rename-Item -Path $finalExe -NewName "untrunc.exe" -Force
+                }
+                
+                Write-Host "Untrunc scaricato, installato e rinominato con successo!" -ForegroundColor Green
+                return $true
+            } else {
+                throw "Estrazione fallita: nessun file .exe trovato."
+            }
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Errore durante il download di Untrunc: $_`n`nScaricalo manualmente da: https://github.com/anthwlock/untrunc/releases/latest", 
+                "Errore Download", "OK", "Error"
+            )
+            return $false
+        }
+    } else { return $false }
 }
 
+# --- Esecuzione Controllo ---
 if (-not (Ensure-Tools)) { exit }
 
 # ============================================================
@@ -107,7 +130,10 @@ if (-not (Test-Path -Path $cartellaOutput)) {
 # VARIABILI SPECIFICHE PER MODALITÀ
 # ============================================================
 $untruncExe = (Get-Command "untrunc.exe" -ErrorAction SilentlyContinue).Source
-if (-not $untruncExe) { $untruncExe = Join-Path (Get-Location) "untrunc.exe" }
+if (-not $untruncExe) { 
+    $found = Get-ChildItem -Path (Get-Location) -Filter "*untrunc*.exe" | Select-Object -First 1
+    if ($found) { $untruncExe = $found.FullName }
+}
 $ffmpegExe = (Get-Command "ffmpeg.exe" -ErrorAction SilentlyContinue).Source
 if (-not $ffmpegExe) { $ffmpegExe = Join-Path (Get-Location) "ffmpeg.exe" }
 
@@ -158,7 +184,7 @@ foreach ($video in $videoFiles) {
 
     if ($isTwitterMode) {
         # --- MODALITÀ UNTRUNC PURA ---
-        # Eseguiamo Untrunc nella cartella dei video (per evitare problemi di percorso)
+        # Eseguiamo Untrunc nella cartella dei video
         Push-Location $cartellaInput
         try {
             $untruncArgs = @("-s", $refFile, $fileInput)
