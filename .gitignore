@@ -1,0 +1,21 @@
+# Output
+*.log
+*.tmp
+*.zip
+
+# FFmpeg (se usato)
+ffmpeg.exe
+ffprobe.exe
+ffplay.exe
+ffmpeg-*.zip
+tools/
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
