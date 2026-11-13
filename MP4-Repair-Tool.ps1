@@ -4,9 +4,8 @@
     MP4-Repair-Tool - Riparatore di file MP4 con supporto Untrunc per video X/Twitter.
 .DESCRIPTION
     Verifica la presenza di FFmpeg e Untrunc. Se manca Untrunc, lo scarica 
-    automaticamente dal repository ufficiale. Offre due modalità: riparazione 
-    standard con FFmpeg e recupero video X/Twitter con Untrunc (richiede un file 
-    di riferimento sano e verifica la dimensione finale).
+    automaticamente dal repository ufficiale (solo la CLI). Offre due modalità: 
+    riparazione standard con FFmpeg e recupero video X/Twitter con Untrunc.
 .NOTES
     Prerequisiti: PowerShell 7+, FFmpeg (per modalità standard), Untrunc.
 #>
@@ -39,7 +38,7 @@ function Ensure-Tools {
     $untruncPath = (Get-Command "untrunc.exe" -ErrorAction SilentlyContinue).Source
     
     if (-not $untruncPath) { 
-        $existing = Get-ChildItem -Path (Get-Location) -Filter "*untrunc*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $existing = Get-ChildItem -Path (Get-Location) -Filter "untrunc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($existing) { $untruncPath = $existing.FullName }
     }
     
@@ -67,22 +66,41 @@ function Ensure-Tools {
             Expand-Archive -Path $zipPath -DestinationPath $tempExtract -Force
             Remove-Item -Path $zipPath -Force
             
-            $foundExe = Get-ChildItem -Path $tempExtract -Filter "*untrunc*.exe" -Recurse | Select-Object -First 1
+			# Cerchiamo ESPLICITAMENTE il file untrunc.exe (CLI)
+            $cliExe = Get-ChildItem -Path $tempExtract -Filter "untrunc.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
             
-            if ($foundExe) {
-                $sourceFolder = $foundExe.Directory.FullName
-                Get-ChildItem -Path $sourceFolder -File | Move-Item -Destination (Get-Location) -Force
+            if ($cliExe) {
+                # Copiamo la CLI nella nostra cartella
+                Copy-Item -Path $cliExe.FullName -Destination (Join-Path (Get-Location) "untrunc.exe") -Force
+                
+                # --- COPIA ANCHE TUTTE LE DLL ---
+                $dllFiles = Get-ChildItem -Path $tempExtract -Filter "*.dll" -Recurse -ErrorAction SilentlyContinue
+                foreach ($dll in $dllFiles) {
+                    Copy-Item -Path $dll.FullName -Destination (Get-Location) -Force
+                    Write-Host "Copiata DLL: $($dll.Name)" -ForegroundColor DarkGray
+                }
+                # --------------------------------
+
+                Write-Host "Untrunc (CLI) e DLL installati con successo!" -ForegroundColor Green
+                
+                # Puliamo la cartella temporanea
                 Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
                 
-                $finalExe = Join-Path (Get-Location) $foundExe.Name
-                if ($foundExe.Name -ne "untrunc.exe") {
-                    Rename-Item -Path $finalExe -NewName "untrunc.exe" -Force
-                }
-                
-                Write-Host "Untrunc scaricato, installato e rinominato con successo!" -ForegroundColor Green
                 return $true
             } else {
-                throw "Estrazione fallita: nessun file .exe trovato."
+                # Se non troviamo untrunc.exe, proviamo con il primo *untrunc*.exe che NON sia la GUI
+                $fallbackExe = Get-ChildItem -Path $tempExtract -Filter "*untrunc*.exe" -Recurse -ErrorAction SilentlyContinue | 
+                               Where-Object { $_.Name -ne "untrunc-gui.exe" } | 
+                               Select-Object -First 1
+                
+                if ($fallbackExe) {
+                    Copy-Item -Path $fallbackExe.FullName -Destination (Join-Path (Get-Location) "untrunc.exe") -Force
+                    Write-Host "Untrunc (CLI - fallback) installato con successo!" -ForegroundColor Green
+                    Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+                    return $true
+                } else {
+                    throw "Nessun file CLI di Untrunc trovato nell'archivio."
+                }
             }
         } catch {
             [System.Windows.Forms.MessageBox]::Show(
@@ -131,7 +149,7 @@ if (-not (Test-Path -Path $cartellaOutput)) {
 # ============================================================
 $untruncExe = (Get-Command "untrunc.exe" -ErrorAction SilentlyContinue).Source
 if (-not $untruncExe) { 
-    $found = Get-ChildItem -Path (Get-Location) -Filter "*untrunc*.exe" | Select-Object -First 1
+    $found = Get-ChildItem -Path (Get-Location) -Filter "untrunc.exe" | Select-Object -First 1
     if ($found) { $untruncExe = $found.FullName }
 }
 $ffmpegExe = (Get-Command "ffmpeg.exe" -ErrorAction SilentlyContinue).Source
@@ -182,24 +200,34 @@ foreach ($video in $videoFiles) {
 
     $success = $false
 
-    if ($isTwitterMode) {
+        if ($isTwitterMode) {
         # --- MODALITÀ UNTRUNC PURA ---
-        # Eseguiamo Untrunc nella cartella dei video
+        
+        # 1. Pulizia preventiva: rimuoviamo eventuali file _fixed vecchi
+        Get-ChildItem -Path $cartellaInput -Filter "*_fixed*" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        
+        # 2. Eseguiamo Untrunc direttamente (senza Start-Process)
         Push-Location $cartellaInput
+        $exitCode = 0
         try {
+            # Esecuzione diretta: più affidabile per catturare l'output e l'exit code
             $untruncArgs = @("-s", $refFile, $fileInput)
             & $untruncExe @untruncArgs 2>&1 | Out-Null
+            $exitCode = $LASTEXITCODE
         } catch {
-            Write-Host " [ERRORE UNTRUNC]" -ForegroundColor Red -NoNewline
+            Write-Host " [ERRORE ESECUZIONE]" -ForegroundColor Red -NoNewline
+            $exitCode = -1
         }
         Pop-Location
 
-        # Cerchiamo il file generato (che avrà _fixed nel nome)
-        $generatedFile = Get-ChildItem -Path $cartellaInput -Filter "*_fixed*" -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        # 3. Cerchiamo il file generato
+        # Untrunc di solito lo chiama "nomeoriginale_fixed.mp4"
+        $generatedFile = Get-ChildItem -Path $cartellaInput -Filter "*_fixed*" -File | 
+                         Where-Object { $_.Name -like "*$baseName*" } | 
+                         Select-Object -First 1
 
         if ($generatedFile) {
             $newSize = $generatedFile.Length
-            # Verifichiamo che il file sia grande almeno il 90% dell'originale
             if ($newSize -gt ($originalSize * 0.9)) {
                 Move-Item -Path $generatedFile.FullName -Destination $fileOutput -Force
                 Write-Host " -> [UNTRUNC] OK" -ForegroundColor Green
@@ -213,8 +241,8 @@ foreach ($video in $videoFiles) {
                 $errori++
             }
         } else {
-            Write-Host " -> [FALLITO]" -ForegroundColor Red
-            $logSummary += "[FALLITO] $($video.Name)"
+            Write-Host " -> [FALLITO (Exit Code: $exitCode)]" -ForegroundColor Red
+            $logSummary += "[FALLITO] $($video.Name) (Exit Code: $exitCode)"
             $errori++
         }
     } else {
